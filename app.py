@@ -1,5 +1,3 @@
-"""FastAPI server with all required endpoints + dynamic evaluation."""
-
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,9 +11,9 @@ from grader import grade_episode
 
 app = FastAPI(
     title="AI Email Triage Environment",
-    version="2.1.0",
-    description="OpenEnv-compliant corporate email triage simulation "
-                "with confidence scoring and calibration grading.")
+    version="2.2.0",
+    description="OpenEnv-compliant email triage with satisfaction scoring, "
+                "confidence calibration, and explainable rewards.")
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"],
@@ -43,18 +41,18 @@ class ActionInput(BaseModel):
     priority: Optional[str] = None
     confidence: Optional[float] = None
 
-class EvaluateRequest(BaseModel):
-    task_id: str
-    actions: List[ActionInput]
+class GradeRequest(BaseModel):
+    task_id: Optional[str] = None
+    actions: Optional[List[ActionInput]] = None
 
 
 @app.get("/")
 def root():
     return {
         "name": "AI Email Triage Environment",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "endpoints": ["/tasks", "/reset", "/step", "/state",
-                       "/baseline", "/grader", "/evaluate", "/health"],
+                       "/baseline", "/grader", "/health"],
         "tasks": list(TASK_REGISTRY.keys()),
     }
 
@@ -102,41 +100,42 @@ def baseline(req: TaskRequest):
     return _run_baseline(req.task_id)
 
 @app.post("/grader")
-def grader():
+def grader(req: GradeRequest = None):
+    """Grade current episode or evaluate a batch of actions."""
+    if req and req.actions and req.task_id:
+        if req.task_id not in TASK_REGISTRY:
+            raise HTTPException(400, f"Unknown task: {req.task_id}")
+
+        eval_env = EmailTriageEnv()
+        eval_env.reset(req.task_id)
+
+        step_results = []
+        for a in req.actions:
+            action = Action(
+                action_type=ActionType(a.action_type),
+                email_id=a.email_id,
+                classification=EmailCategory(a.classification) if a.classification else None,
+                reply_text=a.reply_text,
+                priority=Priority(a.priority) if a.priority else None,
+                confidence=a.confidence)
+            obs, reward, done, info = eval_env.step(action)
+            step_results.append({"reward": reward.value, "done": done})
+            if done:
+                break
+
+        st = eval_env.state()
+        cfg = TASK_REGISTRY[req.task_id]
+        grading = grade_episode(st.emails, st.statuses,
+                                cfg["required_actions"],
+                                st.action_history, st.mistakes)
+        return {"grading": grading, "step_results": step_results}
+
     st = env.state()
     if not st.task_id:
         raise HTTPException(400, "No active episode. Call /reset first.")
     cfg = TASK_REGISTRY[st.task_id]
     return grade_episode(st.emails, st.statuses, cfg["required_actions"],
                          st.action_history, st.mistakes)
-
-@app.post("/evaluate")
-def evaluate(req: EvaluateRequest):
-    """Batch-evaluate a sequence of actions on a task. Returns grading."""
-    if req.task_id not in TASK_REGISTRY:
-        raise HTTPException(400, f"Unknown task: {req.task_id}")
-
-    eval_env = EmailTriageEnv()
-    eval_env.reset(req.task_id)
-
-    step_results = []
-    for a in req.actions:
-        action = Action(
-            action_type=ActionType(a.action_type), email_id=a.email_id,
-            classification=EmailCategory(a.classification) if a.classification else None,
-            reply_text=a.reply_text,
-            priority=Priority(a.priority) if a.priority else None,
-            confidence=a.confidence)
-        obs, reward, done, info = eval_env.step(action)
-        step_results.append({"reward": reward.value, "done": done})
-        if done:
-            break
-
-    st = eval_env.state()
-    cfg = TASK_REGISTRY[req.task_id]
-    grading = grade_episode(st.emails, st.statuses, cfg["required_actions"],
-                            st.action_history, st.mistakes)
-    return {"grading": grading, "step_results": step_results}
 
 
 if __name__ == "__main__":

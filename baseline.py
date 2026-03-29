@@ -165,7 +165,7 @@ def run_baseline(task_id: str) -> Dict:
 
     if not done:
         from grader import grade_episode
-        st = env.state()
+        st = env.state
         grading = grade_episode(
             st.emails, st.statuses, required,
             st.action_history, st.mistakes,
@@ -255,7 +255,7 @@ def run_random_baseline(task_id: str, seed: int = 42) -> Dict:
 
     if not done:
         from grader import grade_episode
-        st = env.state()
+        st = env.state
         grading = grade_episode(
             st.emails, st.statuses, required,
             st.action_history, st.mistakes,
