@@ -1,27 +1,7 @@
-"""
-baseline.py — Deterministic heuristic baseline + random agent comparison.
-
-Shows that the environment meaningfully differentiates between
-a smart agent and a random agent.
-"""
-
-from __future__ import annotations
-
 import random
-from typing import Dict, List
-
 from env import EmailTriageEnv
-from models import (
-    Action,
-    ActionType,
-    EmailCategory,
-    EmailView,
-    Priority,
-)
+from models import Action, ActionType, EmailCategory, EmailView, Priority
 from tasks import TASK_REGISTRY
-
-
-# ─── Keyword banks ───────────────────────────────────────────────────────────
 
 _SPAM_KW = [
     "click here", "won", "prize", "lottery", "bank details",
@@ -41,20 +21,25 @@ _COMPLAINT_KW = [
 ]
 
 
-# ─── Heuristic functions ────────────────────────────────────────────────────
-
-def _classify(view: EmailView) -> EmailCategory:
+def _classify_with_confidence(view: EmailView):
     text = (view.subject + " " + view.body).lower()
     spam = sum(1 for k in _SPAM_KW if k in text)
-    if spam >= 2:
-        return EmailCategory.SPAM
     urgent = sum(1 for k in _URGENT_KW if k in text)
-    if urgent >= 2:
-        return EmailCategory.URGENT
     complaint = sum(1 for k in _COMPLAINT_KW if k in text)
+
+    if spam >= 3:
+        return EmailCategory.SPAM, 0.95
+    if spam >= 2:
+        return EmailCategory.SPAM, 0.80
+    if urgent >= 3:
+        return EmailCategory.URGENT, 0.95
+    if urgent >= 2:
+        return EmailCategory.URGENT, 0.85
+    if complaint >= 2:
+        return EmailCategory.COMPLAINT, 0.85
     if complaint >= 1:
-        return EmailCategory.COMPLAINT
-    return EmailCategory.QUERY
+        return EmailCategory.COMPLAINT, 0.70
+    return EmailCategory.QUERY, 0.65
 
 
 def _priority(cat: EmailCategory) -> Priority:
@@ -69,111 +54,114 @@ def _priority(cat: EmailCategory) -> Priority:
 def _reply(view: EmailView, cat: EmailCategory) -> str:
     if cat == EmailCategory.SPAM:
         return ""
-    sender = view.sender.split("@")[0].replace(".", " ").title()
+
+    name = view.sender.split("@")[0].replace(".", " ").title()
+
     if cat == EmailCategory.COMPLAINT:
         return (
-            f"Dear {sender},\n\n"
-            "We are truly sorry for the inconvenience and sincerely "
-            "apologize for this experience. We will review your case "
-            "immediately and process a refund or corrective shipment "
-            "as appropriate. Your order will be resolved within 24 hours. "
-            "We take your feedback seriously and will ensure this does not "
-            "happen again.\n\n"
+            f"Dear {name},\n\n"
+            "We are truly sorry for the inconvenience and sincerely apologize for "
+            "this frustrating experience. We understand how important this is to you. "
+            "We will review your case immediately and process a refund or corrective "
+            "shipment as appropriate. Your order will be resolved within 24 hours.\n\n"
             "Best regards,\nCustomer Support Team"
         )
+
     if cat == EmailCategory.URGENT:
         return (
-            f"Dear {sender},\n\n"
-            "Thank you for alerting us. We are investigating this issue "
-            "with the highest priority. Our security and engineering team "
-            "will rotate all credentials immediately, audit access logs, "
-            "and escalate as needed. We will provide an update within "
-            "the hour. We are sorry for any disruption caused.\n\n"
+            f"Dear {name},\n\n"
+            "Thank you for alerting us. We understand the urgency and are investigating "
+            "this issue with the highest priority. Our security and engineering team "
+            "will rotate all credentials immediately, audit access logs, and escalate "
+            "as needed. We will send an update within the hour. We are sorry for any "
+            "disruption and will work to restore service.\n\n"
             "Best regards,\nIncident Response Team"
         )
+
     return (
-        f"Dear {sender},\n\n"
-        "Thank you for reaching out. We are happy to help with your "
-        "request. For password reset issues, please use this link or "
-        "visit our help center. For onboarding documents, please check "
-        "the welcome orientation pack we sent. We will review your "
-        "billing and send a corrective invoice if needed.\n\n"
+        f"Dear {name},\n\n"
+        "Thank you for reaching out. We understand your concern and are happy to help "
+        "with your request. For password reset issues, please use the link we will send "
+        "shortly or visit our help center. For onboarding documents, please check the "
+        "welcome orientation pack. We will review your billing and send a corrective "
+        "invoice if needed.\n\n"
         "Best regards,\nSupport Team"
     )
 
 
-# ─── Run heuristic baseline ─────────────────────────────────────────────────
-
-def run_baseline(task_id: str) -> Dict:
-    """Execute heuristic baseline agent on task_id."""
+def run_baseline(task_id: str):
     env = EmailTriageEnv()
-    obs = env.reset(task_id)
+    env.reset(task_id)
     cfg = TASK_REGISTRY[task_id]
     required = cfg["required_actions"]
 
-    step_log: List[Dict] = []
+    step_log = []
     done = False
-    info: Dict = {}
+    info = {}
 
     for email_data in cfg["emails"]:
         eid = email_data.id
         view = EmailView(
-            id=eid, sender=email_data.sender,
-            subject=email_data.subject, body=email_data.body,
+            id=eid,
+            sender=email_data.sender,
+            subject=email_data.subject,
+            body=email_data.body,
             timestamp=email_data.timestamp,
         )
 
-        cat = _classify(view)
+        cat, conf = _classify_with_confidence(view)
 
         if "classify" in required:
-            act = Action(
-                action_type=ActionType.CLASSIFY,
-                email_id=eid, classification=cat,
+            _, reward, done, info = env.step(
+                Action(
+                    action_type=ActionType.CLASSIFY,
+                    email_id=eid,
+                    classification=cat,
+                    confidence=conf,
+                )
             )
-            obs, reward, done, info = env.step(act)
-            step_log.append({"step": "classify", "email": eid,
-                             "reward": reward.value})
+            step_log.append(
+                {"step": "classify", "email": eid, "reward": reward.value, "confidence": conf}
+            )
 
         if "reply" in required and cat != EmailCategory.SPAM:
-            text = _reply(view, cat)
-            act = Action(
-                action_type=ActionType.REPLY,
-                email_id=eid, reply_text=text,
+            _, reward, done, info = env.step(
+                Action(
+                    action_type=ActionType.REPLY,
+                    email_id=eid,
+                    reply_text=_reply(view, cat),
+                )
             )
-            obs, reward, done, info = env.step(act)
-            step_log.append({"step": "reply", "email": eid,
-                             "reward": reward.value})
+            step_log.append({"step": "reply", "email": eid, "reward": reward.value})
 
         if "prioritize" in required:
-            pri = _priority(cat)
-            act = Action(
-                action_type=ActionType.PRIORITIZE,
-                email_id=eid, priority=pri,
+            _, reward, done, info = env.step(
+                Action(
+                    action_type=ActionType.PRIORITIZE,
+                    email_id=eid,
+                    priority=_priority(cat),
+                    confidence=conf,
+                )
             )
-            obs, reward, done, info = env.step(act)
-            step_log.append({"step": "prioritize", "email": eid,
-                             "reward": reward.value})
+            step_log.append({"step": "prioritize", "email": eid, "reward": reward.value})
 
         if "resolve" in required:
-            act = Action(action_type=ActionType.RESOLVE, email_id=eid)
-            obs, reward, done, info = env.step(act)
-            step_log.append({"step": "resolve", "email": eid,
-                             "reward": reward.value})
+            _, reward, done, info = env.step(
+                Action(action_type=ActionType.RESOLVE, email_id=eid)
+            )
+            step_log.append({"step": "resolve", "email": eid, "reward": reward.value})
 
         if done:
             break
 
     if not done:
         from grader import grade_episode
-        st = env.state
-        grading = grade_episode(
-            st.emails, st.statuses, required,
-            st.action_history, st.mistakes,
+        st = env.get_state()
+        info["grading"] = grade_episode(
+            st.emails, st.statuses, required, st.action_history, st.mistakes
         )
-        info["grading"] = grading
 
     grading = info.get("grading", {"score": 0.0})
-
     return {
         "task_id": task_id,
         "difficulty": cfg["difficulty"],
@@ -187,98 +175,86 @@ def run_baseline(task_id: str) -> Dict:
     }
 
 
-# ─── Random baseline (for comparison) ───────────────────────────────────────
-
-def run_random_baseline(task_id: str, seed: int = 42) -> Dict:
-    """Execute a RANDOM agent to show environment differentiates quality."""
+def run_random_baseline(task_id: str, seed: int = 42):
     random.seed(seed)
     env = EmailTriageEnv()
-    obs = env.reset(task_id)
+    env.reset(task_id)
+
     cfg = TASK_REGISTRY[task_id]
     required = cfg["required_actions"]
 
     categories = list(EmailCategory)
     priorities = list(Priority)
-    random_replies = [
-        "ok",
-        "noted",
-        "will do",
-        "thanks",
-        "",
-    ]
+    bad_replies = ["ok", "noted", "will do", "thanks", ""]
 
-    step_log: List[Dict] = []
+    step_log = []
     done = False
-    info: Dict = {}
+    info = {}
 
     for email_data in cfg["emails"]:
         eid = email_data.id
+        conf = round(random.uniform(0.3, 1.0), 2)
 
         if "classify" in required:
-            cat = random.choice(categories)
-            act = Action(
-                action_type=ActionType.CLASSIFY,
-                email_id=eid, classification=cat,
+            _, reward, done, info = env.step(
+                Action(
+                    action_type=ActionType.CLASSIFY,
+                    email_id=eid,
+                    classification=random.choice(categories),
+                    confidence=conf,
+                )
             )
-            obs, reward, done, info = env.step(act)
-            step_log.append({"step": "classify", "email": eid,
-                             "reward": reward.value})
+            step_log.append({"step": "classify", "email": eid, "reward": reward.value})
 
         if "reply" in required:
-            text = random.choice(random_replies)
-            act = Action(
-                action_type=ActionType.REPLY,
-                email_id=eid, reply_text=text,
+            _, reward, done, info = env.step(
+                Action(
+                    action_type=ActionType.REPLY,
+                    email_id=eid,
+                    reply_text=random.choice(bad_replies),
+                )
             )
-            obs, reward, done, info = env.step(act)
-            step_log.append({"step": "reply", "email": eid,
-                             "reward": reward.value})
+            step_log.append({"step": "reply", "email": eid, "reward": reward.value})
 
         if "prioritize" in required:
-            pri = random.choice(priorities)
-            act = Action(
-                action_type=ActionType.PRIORITIZE,
-                email_id=eid, priority=pri,
+            _, reward, done, info = env.step(
+                Action(
+                    action_type=ActionType.PRIORITIZE,
+                    email_id=eid,
+                    priority=random.choice(priorities),
+                    confidence=conf,
+                )
             )
-            obs, reward, done, info = env.step(act)
-            step_log.append({"step": "prioritize", "email": eid,
-                             "reward": reward.value})
+            step_log.append({"step": "prioritize", "email": eid, "reward": reward.value})
 
         if "resolve" in required:
-            act = Action(action_type=ActionType.RESOLVE, email_id=eid)
-            obs, reward, done, info = env.step(act)
-            step_log.append({"step": "resolve", "email": eid,
-                             "reward": reward.value})
+            _, reward, done, info = env.step(
+                Action(action_type=ActionType.RESOLVE, email_id=eid)
+            )
+            step_log.append({"step": "resolve", "email": eid, "reward": reward.value})
 
         if done:
             break
 
     if not done:
         from grader import grade_episode
-        st = env.state
-        grading = grade_episode(
-            st.emails, st.statuses, required,
-            st.action_history, st.mistakes,
+        st = env.get_state()  # IMPORTANT: correct method name
+        info["grading"] = grade_episode(
+            st.emails, st.statuses, required, st.action_history, st.mistakes
         )
-        info["grading"] = grading
 
     grading = info.get("grading", {"score": 0.0})
-
     return {
         "task_id": task_id,
         "difficulty": cfg["difficulty"],
         "score": grading.get("score", 0.0),
         "breakdown": grading.get("breakdown", {}),
-        "details": grading.get("details", []),
-        "summary": grading.get("summary", ""),
         "steps": step_log,
         "total_reward": info.get("total_reward", 0.0),
         "mistakes": info.get("mistakes", 0),
         "agent": "random",
     }
 
-
-# ─── CLI ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("=" * 72)
@@ -287,27 +263,20 @@ if __name__ == "__main__":
     print("=" * 72)
 
     for tid in TASK_REGISTRY:
-        heuristic = run_baseline(tid)
-        rand = run_random_baseline(tid)
+        h = run_baseline(tid)
+        r = run_random_baseline(tid)
+        gap = h["score"] - r["score"]
 
-        print(f"\n{'─' * 68}")
-        print(f"  Task: {tid} ({heuristic['difficulty']})")
-        print(f"  {'─' * 40}")
-        print(f"  {'Metric':<25} {'Heuristic':>12} {'Random':>12} {'Gap':>12}")
-        print(f"  {'─' * 40}")
-        print(f"  {'Score':<25} {heuristic['score']:>12.4f} {rand['score']:>12.4f} {heuristic['score'] - rand['score']:>+12.4f}")
-        print(f"  {'Total Reward':<25} {heuristic['total_reward']:>12} {rand['total_reward']:>12}")
-        print(f"  {'Mistakes':<25} {heuristic['mistakes']:>12} {rand['mistakes']:>12}")
-        print(f"  {'Steps':<25} {len(heuristic['steps']):>12} {len(rand['steps']):>12}")
+        print(f"\n  Task: {tid} ({h['difficulty']})")
+        print(f"  {'Metric':<25} {'Heuristic':>10} {'Random':>10} {'Gap':>10}")
+        print(f"  {'-'*55}")
+        print(f"  {'Score':<25} {h['score']:>10.4f} {r['score']:>10.4f} {gap:>+10.4f}")
+        print(f"  {'Reward':<25} {h.get('total_reward', 0.0):>10} {r.get('total_reward', 0.0):>10}")
+        print(f"  {'Mistakes':<25} {h.get('mistakes', 0):>10} {r.get('mistakes', 0):>10}")
 
-        if heuristic.get("breakdown") and rand.get("breakdown"):
+        if h.get("breakdown"):
             print(f"\n  Score Breakdown:")
-            for k in heuristic["breakdown"]:
-                h_val = heuristic["breakdown"].get(k, 0)
-                r_val = rand["breakdown"].get(k, 0)
-                print(f"    {k:<30} {h_val:>8.2%}  vs  {r_val:>8.2%}")
-
+            for k, hv in h["breakdown"].items():
+                rv = r.get("breakdown", {}).get(k, 0)
+                print(f"    {k:<25} {hv:>8.2%}  vs  {rv:>8.2%}")
     print(f"\n{'=' * 72}")
-    print("  ✅ Heuristic agent consistently outperforms random agent")
-    print("  ✅ This proves the environment meaningfully measures quality")
-    print("=" * 72)

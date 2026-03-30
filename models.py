@@ -1,21 +1,7 @@
-"""
-models.py — Typed Pydantic models for the AI Email Triage Environment.
-
-Covers: Actions, Observations, Rewards, State, Tracking (history, mistakes).
-Production-grade with full type safety.
-"""
-
-from __future__ import annotations
-
 from enum import Enum
 from typing import Dict, List, Optional
-
 from pydantic import BaseModel, Field
 
-
-# ═══════════════════════════════════════════════════════════════════
-# Enums
-# ═══════════════════════════════════════════════════════════════════
 
 class EmailCategory(str, Enum):
     SPAM = "spam"
@@ -38,12 +24,7 @@ class ActionType(str, Enum):
     RESOLVE = "resolve"
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Email
-# ═══════════════════════════════════════════════════════════════════
-
 class EmailMessage(BaseModel):
-    """Internal email with ground-truth labels (hidden from agent)."""
     id: str
     sender: str
     subject: str
@@ -52,45 +33,30 @@ class EmailMessage(BaseModel):
     ground_truth_category: Optional[EmailCategory] = None
     ground_truth_priority: Optional[Priority] = None
     ground_truth_reply_keywords: List[str] = Field(default_factory=list)
-    is_ambiguous: bool = Field(
-        default=False,
-        description="Flag for edge-case / ambiguous emails.",
-    )
-    difficulty_note: str = Field(
-        default="",
-        description="Internal note on what makes this email tricky.",
-    )
+    is_ambiguous: bool = False
+    difficulty_note: str = ""
 
-
-# ═══════════════════════════════════════════════════════════════════
-# Agent Action
-# ═══════════════════════════════════════════════════════════════════
 
 class Action(BaseModel):
-    """A single action submitted by the agent."""
     action_type: ActionType
     email_id: str
     classification: Optional[EmailCategory] = None
     reply_text: Optional[str] = None
     priority: Optional[Priority] = None
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
 
-
-# ═══════════════════════════════════════════════════════════════════
-# Tracking Records
-# ═══════════════════════════════════════════════════════════════════
 
 class ActionRecord(BaseModel):
-    """Immutable record of one action taken during the episode."""
     step: int
     action_type: str
     email_id: str
     reward: float
     explanation: str
     correct: Optional[bool] = None
+    confidence: Optional[float] = None
 
 
 class MistakeRecord(BaseModel):
-    """Record of a specific mistake the agent made."""
     step: int
     email_id: str
     action_type: str
@@ -99,12 +65,7 @@ class MistakeRecord(BaseModel):
     penalty: float
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Observation (agent-visible)
-# ═══════════════════════════════════════════════════════════════════
-
 class EmailView(BaseModel):
-    """Sanitised view of an email — no ground-truth fields."""
     id: str
     sender: str
     subject: str
@@ -113,7 +74,6 @@ class EmailView(BaseModel):
 
 
 class ProgressInfo(BaseModel):
-    """Real-time progress feedback embedded in every observation."""
     total_emails: int = 0
     processed_emails: int = 0
     completion_pct: float = 0.0
@@ -124,7 +84,6 @@ class ProgressInfo(BaseModel):
 
 
 class Observation(BaseModel):
-    """Returned to the agent after every step() and reset()."""
     current_email: Optional[EmailView] = None
     inbox_remaining: int = 0
     actions_taken: List[str] = Field(default_factory=list)
@@ -132,26 +91,13 @@ class Observation(BaseModel):
     progress: ProgressInfo = Field(default_factory=ProgressInfo)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Reward
-# ═══════════════════════════════════════════════════════════════════
-
 class Reward(BaseModel):
-    """Step-level reward with explainable breakdown."""
-    value: float = Field(0.0, description="Net reward, clamped to [-1, 1].")
+    value: float = 0.0
     breakdown: Dict[str, float] = Field(default_factory=dict)
-    explanations: List[str] = Field(
-        default_factory=list,
-        description="Human-readable reasons for each component.",
-    )
+    explanations: List[str] = Field(default_factory=list)
 
-
-# ═══════════════════════════════════════════════════════════════════
-# Per-email Processing Status
-# ═══════════════════════════════════════════════════════════════════
 
 class EmailStatus(BaseModel):
-    """Tracks what the agent has done to a single email."""
     email_id: str
     classified_as: Optional[EmailCategory] = None
     reply_sent: Optional[str] = None
@@ -159,14 +105,10 @@ class EmailStatus(BaseModel):
     resolved: bool = False
     action_count: int = 0
     classify_attempts: int = 0
+    classification_confidence: Optional[float] = None
 
-
-# ═══════════════════════════════════════════════════════════════════
-# Full Environment State
-# ═══════════════════════════════════════════════════════════════════
 
 class EnvState(BaseModel):
-    """Complete internal state — serialisable for checkpointing."""
     task_id: str = ""
     difficulty: str = ""
     emails: List[EmailMessage] = Field(default_factory=list)
